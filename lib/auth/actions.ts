@@ -47,10 +47,14 @@ export async function register(_: ActionState, fd: FormData): Promise<ActionStat
     },
   });
   if (error) {
-    // The DB trigger on auth.users enforces the college rules even if this check is bypassed.
-    if (/college|approved|\.edu/i.test(error.message)) return { error: error.message };
-    if (/already/i.test(error.message)) return { error: 'An account with this email already exists. Try signing in.' };
-    return { error: 'Could not create your account. Please try again.' };
+    console.error('SUPABASE SIGNUP ERROR:', {
+      message: error.message,
+      status: error.status,
+      name: error.name,
+      code: error.code,
+    });
+
+    return { error: error.message };
   }
   return { success: 'We sent a confirmation link to your college email. Click it, then sign in.' };
 }
