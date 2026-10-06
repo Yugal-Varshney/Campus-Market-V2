@@ -47,15 +47,33 @@ export async function register(_: ActionState, fd: FormData): Promise<ActionStat
     },
   });
   if (error) {
-    console.error('SUPABASE SIGNUP ERROR:', {
-      message: error.message,
-      status: error.status,
-      name: error.name,
-      code: error.code,
-    });
+  console.error('Supabase signup error:', {
+    message: error.message,
+    code: error.code,
+    status: error.status,
+  });
 
+  if (error.code === 'over_email_send_rate_limit') {
+    return {
+      error:
+        'Too many confirmation emails were requested. Please wait a while and try again.',
+    };
+  }
+
+  if (/college|approved|\.edu/i.test(error.message)) {
     return { error: error.message };
   }
+
+  if (/already/i.test(error.message)) {
+    return {
+      error: 'An account with this email already exists. Try signing in.',
+    };
+  }
+
+  return {
+    error: 'Could not create your account. Please try again.',
+  };
+}
   return { success: 'We sent a confirmation link to your college email. Click it, then sign in.' };
 }
 
