@@ -92,6 +92,53 @@ for (n,) in dp.su("select conname from pg_constraint where conrelid='public.item
 dp.su("update public.items set category='furniture' where title='Calculator'")
 t('004 flags an unmatched category value as DANGER (008 would abort)', any(r[1] == 'items.category value' and r[2] == 'furniture' and r[4] == 'DANGER' for r in audit004(dp)))
 
+# ───────────────────────────────────── 1c. STORAGE PRIVILEGES (Supabase: postgres does not own storage.objects) ─────────────────────────────────────
+head('1c. Migration role that does NOT own storage.objects (mirrors Supabase ownership)')
+own = h.create_db('own1') or h.DB('own1')
+try: own.su('revoke supabase_storage_admin from mig_editor')          # roles are cluster-wide: start from a known state
+except Exception: pass
+own.su("""do $$ begin
+  if not exists (select 1 from pg_roles where rolname='supabase_storage_admin') then create role supabase_storage_admin nologin; end if;
+  if not exists (select 1 from pg_roles where rolname='mig_editor') then create role mig_editor login; end if; end $$""")
+own.su((h.HERE / 'stub.sql').read_text())
+own.su("alter schema storage owner to supabase_storage_admin; alter table storage.objects owner to supabase_storage_admin; alter table storage.buckets owner to supabase_storage_admin; alter function storage.foldername(text) owner to supabase_storage_admin")
+own.su((h.HERE / 'schema.v1.sql').read_text())
+for f in ('002_security_fixes.sql', '003_functional_schema_changes.sql'): assert own.migrate(f)[0] == 'OK'
+h.seed_v2(own)
+own.su("""do $$ declare r record; begin
+  for r in select c.oid::regclass as rel, c.relkind from pg_class c where c.relnamespace='public'::regnamespace and c.relkind in ('r','p','v') loop
+    execute format('alter %s %s owner to mig_editor', case when r.relkind='v' then 'view' else 'table' end, r.rel); end loop;
+  for r in select p.oid::regprocedure as fn from pg_proc p where p.pronamespace='public'::regnamespace loop execute format('alter function %s owner to mig_editor', r.fn); end loop;
+  alter table auth.users owner to mig_editor; alter schema public owner to mig_editor;
+  grant usage on schema auth to mig_editor; grant usage on schema storage to mig_editor;
+  grant select, update on storage.buckets to mig_editor; grant select on storage.objects to mig_editor; end $$""")
+t('setup: migration role is NOT a superuser, NOT the owner of storage.objects, NOT a member of its owner',
+  own.su("select not rolsuper from pg_roles where rolname='mig_editor'")[0][0] and own.su("select pg_get_userbyid(relowner) from pg_class where oid='storage.objects'::regclass")[0][0] == 'supabase_storage_admin'
+  and not own.su("select pg_has_role('mig_editor','supabase_storage_admin','USAGE')")[0][0])
+def as_editor(fname=None, sql=None, fetch=False):
+    c = psycopg2.connect(own.uri, user='mig_editor'); c.autocommit = True; cur = c.cursor()
+    try:
+        cur.execute(sql if sql else (h.MIG / fname).read_text()); return ('OK', cur.fetchall() if (fetch and cur.description) else '')
+    except Exception as e:
+        try: cur.execute('rollback')
+        except Exception: pass
+        return ('ERR', str(e).strip())
+    finally: c.close()
+r = as_editor(sql=(h.MIG / '004_v3_preflight_audit.sql').read_text().rstrip().rstrip(';'), fetch=True)
+t('004 run by that role: storage ownership row is informational (no DANGER) because V2 policies already exist there',
+  r[0] == 'OK' and not [x for x in r[1] if str(x[4]).startswith('DANGER')] and any(x[1].startswith('storage.objects ownership') and x[4].startswith('OK') for x in r[1]), r[1] if r[0] == 'ERR' else '')
+for f in MIGS[:4]:
+    t(f'{f} succeeds for a role with NO rights on storage.objects (storage-independent)', as_editor(f)[0] == 'OK')
+s0 = h.snapshot(own); r = as_editor(MIGS[4]); s1 = h.snapshot(own)
+t('009 with NO policy rights aborts at its probe with a clear message', err(r, 'MIGRATION 009 ABORTED', 'cannot create/alter/drop policies on storage.objects'), r[1][:200])
+t('... and changes nothing at all (no partial apply, no probe policy left behind)', s0 == s1 and own.su("select count(*) from pg_policies where policyname='v3 privilege probe'")[0][0] == 0)
+own.su('grant supabase_storage_admin to mig_editor')
+r = as_editor(MIGS[4]); t('009 succeeds once the role may manage storage.objects policies', r[0] == 'OK', r[1][:200])
+t('009 leaves no probe policy; V2 storage policies now also require an active account', own.su("select count(*) from pg_policies where policyname='v3 privilege probe'")[0][0] == 0
+  and 'account_is_active' in own.su("select with_check from pg_policies where policyname='upload to own folder'")[0][0] and 'account_is_active' in own.su("select qual from pg_policies where policyname='delete own photos'")[0][0])
+t('009 re-run is idempotent', as_editor(MIGS[4])[0] == 'OK')
+own.su('revoke supabase_storage_admin from mig_editor')
+
 # ───────────────────────────────────── 2. APPLY ON V2 PRODUCTION-SHAPED DATA ─────────────────────────────────────
 head('2. Apply 005-009 to V2-shaped production data: preserved, idempotent')
 db = h.build_v2_database('v3t'); fp0 = h.fingerprint(db)

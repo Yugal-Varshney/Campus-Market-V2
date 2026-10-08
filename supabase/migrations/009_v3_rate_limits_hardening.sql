@@ -7,6 +7,8 @@
 --     "delete own photos" on storage.objects now ALSO require an active (non-suspended) account, and
 --     uploads additionally pass the photo_upload limit. No other storage policy is touched.
 --   Existing data is not modified. Idempotent; one transaction. Requires 005 and 006.
+--   Needs ONLY policy DDL on storage.objects (verified by a rolled-back probe before anything changes).
+--   Migrations 005-008 do not touch the storage schema at all.
 --
 -- HOW EACH LIMIT IS CALCULATED (see rate_limit_check in 005): user = auth.uid() from the signed JWT;
 -- time = now() on the database server; the window slides: count of ACCEPTED events by that user for that
@@ -26,7 +28,7 @@ begin;
 
 -- ───────────────────────── PRE-FLIGHT GATE ─────────────────────────
 do $$
-declare bad text; v_owner oid;
+declare bad text;
 begin
   if to_regprocedure('public.rate_limit_check(text)') is null or to_regprocedure('public.items_v3_insert_guard()') is null
      or to_regprocedure('public.account_is_active()') is null then
@@ -44,10 +46,30 @@ begin
     raise exception 'MIGRATION 009 ABORTED - nothing was changed. Unexpected storage.objects write policy: %', bad
       using hint = 'An extra permissive policy would defeat the suspension/upload limits. Drop it yourself, then run this file again.';
   end if;
-  select relowner into v_owner from pg_class where oid = 'storage.objects'::regclass;
-  if not pg_has_role(current_user, v_owner, 'USAGE') then
-    raise exception 'MIGRATION 009 ABORTED - nothing was changed. The current role (%) cannot alter policies on storage.objects.', current_user;
-  end if;
+end $$;
+
+-- PRE-FLIGHT PROBE: can this role create / alter / drop policies on storage.objects? (all 009 needs there)
+-- On Supabase, storage.objects is owned by supabase_storage_admin and the SQL Editor role `postgres` is NOT
+-- the owner and NOT a member of that role. It can still manage policies because the platform extension
+-- `supautils` delegates exactly CREATE POLICY / ALTER POLICY / DROP POLICY on storage.objects to `postgres`
+-- (supautils.policy_grants). A plain "is owner?" test (pg_has_role) therefore gives a false alarm there, so
+-- instead of guessing we TRY the real statements inside a sub-transaction that is ALWAYS rolled back
+-- (it ends by raising a private exception). Nothing is left behind. If the role lacks the privilege the
+-- error is caught and 009 aborts BEFORE changing anything. No ownership or role membership is ever altered.
+do $$
+begin
+  begin
+    create policy "v3 privilege probe" on storage.objects for select to authenticated using (false);
+    alter policy "v3 privilege probe" on storage.objects using (false);
+    drop policy "v3 privilege probe" on storage.objects;
+    raise exception 'v3_probe_ok';
+  exception
+    when insufficient_privilege then
+      raise exception 'MIGRATION 009 ABORTED - nothing was changed. Role "%" cannot create/alter/drop policies on storage.objects.', current_user
+        using hint = 'Nothing was modified. Do not change ownership of Supabase-managed tables; send me this message.';
+    when others then
+      if sqlerrm is distinct from 'v3_probe_ok' then raise; end if;
+  end;
 end $$;
 
 -- ───────────────────────── limit triggers (all definer, signed-in callers only) ─────────────────────────

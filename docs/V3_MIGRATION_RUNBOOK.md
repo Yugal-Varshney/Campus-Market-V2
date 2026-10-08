@@ -10,7 +10,7 @@ Nothing here has been run against your Supabase project. Run it yourself, in the
 Run `004_v3_preflight_audit.sql`. It is a single SELECT. Read the result table:
 - `MISSING` / `DANGER` → **stop**; send me the rows. (Typical DANGER: an extra permissive policy created in the dashboard, an items category value outside books/notes/electronics/stationary, API roles able to write `profiles`.)
 - `REVIEW` → read it. "admin accounts: 0" is expected (you create the first admin after 006). "reserved display name in use" lists existing users; V3 never renames anyone. Rows under section 9 are listings that V2's NOT VALID constraints would stop a moderator from updating (hiding); fix those rows first if any appear.
-- Section 10 must say `OK` for "can this role alter storage.objects policies" or 009 will abort.
+- Section 10 "storage.objects ownership": on Supabase it is **normal** to see `owner=supabase_storage_admin | current_user=postgres`. `postgres` does not own that table, but the platform extension `supautils` delegates `CREATE/ALTER/DROP POLICY` on `storage.objects` to it (Supabase's own troubleshooting docs describe this). Do **not** try to change ownership or grant yourself `supabase_storage_admin`. Migration 009 re-checks the real capability itself with a rolled-back probe before changing anything and aborts safely if it ever fails. (The first version of 004 flagged this row as DANGER; that was a false alarm in my check and is fixed.)
 
 ## 2. Migrations, one file per run
 `005_v3_audit_events_and_rate_core.sql` → `006_v3_accounts_and_moderation.sql` → `007_v3_reporting.sql` → `008_v3_categories.sql` → `009_v3_rate_limits_hardening.sql`
@@ -38,7 +38,7 @@ select * from public.rate_limit_rules order by action, window_seconds;
 
 ## 5. Manual checks on the live site (not testable locally)
 Sign in as a normal student and: browse, search/filter, create + edit + mark sold a listing, upload a photo, wishlist, contact seller, start a chat and send a message in two browsers (Realtime), delete a listing that has no chat. Then, with a second test account promoted to moderator, call the RPCs from the SQL Editor impersonating nothing — the dashboards arrive in later phases; until then staff features are exercised through tests only.
-**Specifically verify on Supabase** (my local stand-in cannot): `ALTER POLICY` on `storage.objects` succeeded in 009 and a photo upload still works; uploading > 5 MB or a non-image is still rejected; Realtime chat still delivers.
+**Specifically verify on Supabase** (my local stand-in cannot): 009 completed (its probe passed and the two storage policies were altered) and a photo upload still works; uploading > 5 MB or a non-image is still rejected; Realtime chat still delivers.
 
 ## 6. If something goes wrong
 There are no automatic down-migrations. Options: restore the backup; or, for a single migration, undo by hand: re-create the V2 policy `"signed-in can browse"` (`create policy "signed-in can browse" on public.items for select to authenticated using (true);`) and drop the three `v3 ...` policies; the old CHECKs can be re-added with `alter table ... add constraint ... check (...)`. Tell me before improvising.

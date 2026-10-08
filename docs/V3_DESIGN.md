@@ -129,3 +129,4 @@ Not testable locally (needs real Supabase): Storage API enforcement, `ALTER POLI
 - `pending`/`rejected` moderation states exist in the schema but nothing sets them yet (reserved for V4).
 - Staff cannot read conversations/messages/`item_private` (privacy by design); moderators never see user emails.
 - Not auto-audited: direct SQL edits to `categories`, `rate_limit_rules`. Rejected (rolled-back) requests cannot be logged.
+- **Storage policy DDL on Supabase (found via production preflight):** `postgres` does not own `storage.objects` (owner `supabase_storage_admin`) yet can manage its policies because `supautils.policy_grants` delegates create/alter/drop policy on it. Migration 009 therefore verifies the capability with a rolled-back `CREATE/ALTER/DROP POLICY` probe instead of an ownership test, and touches nothing if the probe fails. 005-008 never reference the storage schema.

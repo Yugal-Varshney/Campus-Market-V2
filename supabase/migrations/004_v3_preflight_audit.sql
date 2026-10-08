@@ -8,7 +8,7 @@
 --
 --  1 V2 prerequisites present?              8 existing profiles with reserved display names (not renamed)
 --  2 V3 objects that already exist          9 existing rows that violate V2's NOT VALID constraints
---  3 policies on tables V3 touches         10 storage: bucket, owner, can this role alter its policies?
+--  3 policies on tables V3 touches         10 storage: bucket + ownership (information)
 --  4 API-role write access to profiles     11 RLS status + Realtime publication
 --  5 constraints 006/008 will replace      12 auth.users triggers
 --  6 items.category values (008 aborts on any unmatched value)
@@ -180,9 +180,14 @@ rows_out as (
   select 10, 'storage bucket', b.id::text, 'public=' || b.public::text || ' | file_size_limit=' || coalesce(b.file_size_limit::text, 'none')
          || ' | mime=' || coalesce(b.allowed_mime_types::text, 'any'), 'INFO' from storage.buckets b
   union all
-  select 10, 'can this role alter storage.objects policies? (009 needs it)', 'storage.objects',
-         'owner=' || pg_get_userbyid(c.relowner) || ' | current_user=' || current_user,
-         case when pg_has_role(current_user, c.relowner, 'USAGE') then 'OK' else 'DANGER' end
+  select 10, 'storage.objects ownership (information only)', 'storage.objects',
+         'owner=' || pg_get_userbyid(c.relowner) || ' | current_user=' || current_user ||
+         case when pg_has_role(current_user, c.relowner, 'USAGE') then ' | this role owns the table'
+              else ' | NORMAL on Supabase: postgres is not the owner, but supautils delegates CREATE/ALTER/DROP POLICY on storage.objects to it. 009 re-checks this itself with a rolled-back probe and aborts safely if it ever fails.' end,
+         case when pg_has_role(current_user, c.relowner, 'USAGE') then 'OK'
+              when exists (select 1 from pg_policies p where p.schemaname = 'storage' and p.tablename = 'objects' and p.policyname in ('upload to own folder', 'delete own photos'))
+                   then 'OK (policy DDL already worked here: V2 policies exist)'
+              else 'REVIEW' end
   from pg_class c where c.oid = 'storage.objects'::regclass
 
   union all
