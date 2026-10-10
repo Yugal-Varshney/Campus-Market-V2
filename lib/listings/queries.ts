@@ -1,6 +1,7 @@
 import 'server-only';
 import { createClient } from '@/lib/supabase/server';
 import { PAGE_SIZE } from '@/lib/constants';
+import { friendlyDbError } from '@/lib/errors';
 import { ITEM_COLUMNS, toListing } from './mappers';
 import type { Listing, ListingQuery, Paginated, SellerContact, WishlistItem } from '@/types';
 
@@ -75,7 +76,8 @@ export async function getWishlist(userId: string): Promise<WishlistItem[]> {
 export async function getSellerContact(itemId: number): Promise<SellerContact | { error: string }> {
   const supabase = await createClient();
   const { data, error } = await supabase.rpc('get_contact', { p_item_id: itemId });
-  if (error) return { error: error.message.includes('Too many') ? error.message : 'Contact details are unavailable right now.' };
+  // Migration 009 rate limits raise 'RATE_LIMIT: ...'; the old V2 'Too many' text no longer exists.
+  if (error) return { error: friendlyDbError(error.message, 'Contact details are unavailable right now.') };
   const row = data?.[0];
   if (!row) return { error: 'Contact details are unavailable for this listing.' };
   return { name: row.name, email: row.email, phone: row.phone };

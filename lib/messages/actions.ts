@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { getCurrentUser } from '@/lib/auth/session';
+import { friendlyDbError, knownDbError } from '@/lib/errors';
 import type { Message } from '@/types';
 
 /** Find-or-create the buyer's conversation for a listing. The DB trigger sets seller + names. */
@@ -23,6 +24,8 @@ export async function startConversation(itemId: number): Promise<{ conversationI
     if (again.data) return { conversationId: again.data.id };
   }
   const msg = error?.message ?? '';
+  const known = knownDbError(msg);
+  if (known) return { error: known };
   if (/own|yourself/i.test(msg)) return { error: "That's your own listing." };
   if (/no longer available|showcase|not found/i.test(msg)) return { error: msg };
   return { error: 'Could not start a chat. Please try again.' };
@@ -41,6 +44,6 @@ export async function sendMessage(conversationId: number, body: string): Promise
     .insert({ conversation_id: conversationId, sender_id: user.id, body: text })
     .select('id, conversation_id, sender_id, body, created_at')
     .single();
-  if (error || !data) return { error: 'Message could not be sent.' };
+  if (error || !data) return { error: friendlyDbError(error?.message, 'Message could not be sent.') };
   return { message: { id: data.id, conversationId: data.conversation_id, senderId: data.sender_id, body: data.body, createdAt: data.created_at } };
 }

@@ -19,6 +19,8 @@ export function timeAgo(iso: string, now: number = Date.now()): string {
 export function statusInfo(item: Pick<Listing, 'status' | 'listingType'>) {
   if (item.status === 'sold') return { label: 'SOLD', cls: 'sold', done: true };
   if (item.status === 'rented') return { label: 'RENTED', cls: 'rented-out', done: true };
+  // 'inactive' is set by the database (migration 006); there is no screen that sets it yet.
+  if (item.status === 'inactive') return { label: 'UNAVAILABLE', cls: 'sold', done: true };
   if (item.listingType === 'rent') return { label: 'FOR RENT', cls: 'rent', done: false };
   return { label: 'FOR SALE', cls: 'sell', done: false };
 }

@@ -38,7 +38,13 @@ export async function register(_: ActionState, fd: FormData): Promise<ActionStat
   if (problem) return { error: problem };
 
   const supabase = await createClient();
-  const { error } = await supabase.auth.signUp({
+
+  // Friendly pre-check for reserved display names (migration 009 enforces it in the database as well,
+  // but Supabase Auth reports trigger failures only as a generic "Database error saving new user").
+  const { data: reserved } = await supabase.rpc('is_display_name_reserved', { p_name: name.trim() });
+  if (reserved === true) return { error: 'That display name is reserved. Please choose another.' };
+
+  const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
@@ -47,33 +53,31 @@ export async function register(_: ActionState, fd: FormData): Promise<ActionStat
     },
   });
   if (error) {
-  console.error('Supabase signup error:', {
-    message: error.message,
-    code: error.code,
-    status: error.status,
-  });
+    console.error('Supabase signup error:', { message: error.message, code: error.code, status: error.status });
 
-  if (error.code === 'over_email_send_rate_limit') {
-    return {
-      error:
-        'Too many confirmation emails were requested. Please wait a while and try again.',
-    };
+    if (error.code === 'over_email_send_rate_limit') {
+      return { error: 'Too many confirmation emails were requested. Please wait a while and try again.' };
+    }
+    if (/already/i.test(error.message)) {
+      return { error: 'An account with this email already exists. Try signing in.' };
+    }
+    if (/RESERVED_NAME/.test(error.message)) {
+      return { error: 'That display name is reserved. Please choose another.' };
+    }
+    if (/college|approved|\.edu/i.test(error.message)) {
+      return { error: error.message };
+    }
+    // The college-email / allow-list trigger on auth.users surfaces as this generic message.
+    if (/database error saving new user/i.test(error.message)) {
+      return { error: "We couldn't create this account. Check that you're using your approved university email address and a display name that isn't reserved." };
+    }
+    return { error: 'Could not create your account. Please try again.' };
   }
 
-  if (/college|approved|\.edu/i.test(error.message)) {
-    return { error: error.message };
-  }
+  // When "Confirm email" is switched OFF in Supabase Auth, signUp returns a live session and the user
+  // is already signed in, so telling them to check their inbox would be wrong.
+  if (data.session) redirect('/marketplace');
 
-  if (/already/i.test(error.message)) {
-    return {
-      error: 'An account with this email already exists. Try signing in.',
-    };
-  }
-
-  return {
-    error: 'Could not create your account. Please try again.',
-  };
-}
   return { success: 'We sent a confirmation link to your college email. Click it, then sign in.' };
 }
 
@@ -87,9 +91,12 @@ export async function requestPasswordReset(_: ActionState, fd: FormData): Promis
   const email = str(fd, 'email').trim();
   if (!isCollegeEmail(email)) return { error: 'Enter your college email above first.' };
   const supabase = await createClient();
-  await supabase.auth.resetPasswordForEmail(email, {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
     redirectTo: `${await siteUrl()}/auth/callback?next=/reset-password`,
   });
+  if (error?.status === 429 || error?.code === 'over_email_send_rate_limit' || error?.code === 'over_request_rate_limit') {
+    return { error: 'Too many reset requests. Please wait a minute and try again.' };
+  }
   // Same message whether or not the account exists (no account enumeration).
   return { success: 'If that account exists, a reset link is on its way to your inbox.' };
 }

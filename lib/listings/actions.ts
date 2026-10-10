@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import { getCurrentUser } from '@/lib/auth/session';
 import { moderateListing } from '@/lib/moderation';
+import { friendlyDbError } from '@/lib/errors';
 import { validateListing } from '@/lib/validation/listing';
 import { removeImage, storagePathFromUrl, uploadListingImage } from './storage';
 import { getSellerContact } from './queries';
@@ -60,7 +61,8 @@ export async function createListing(_: ActionState, fd: FormData): Promise<Actio
     .single();
   if (insertErr || !item) {
     await removeImage(up.path ?? null);
-    return { error: 'Could not post your listing. Please check the fields and try again.' };
+    // Rate limits and account restrictions come back as coded messages (migrations 006/009).
+    return { error: friendlyDbError(insertErr?.message, 'Could not post your listing. Please check the fields and try again.') };
   }
 
   const { error: privErr } = await supabase
@@ -69,7 +71,7 @@ export async function createListing(_: ActionState, fd: FormData): Promise<Actio
   if (privErr) {
     await supabase.from('items').delete().eq('id', item.id);
     await removeImage(up.path ?? null);
-    return { error: 'Could not save your contact details. Please try again.' };
+    return { error: friendlyDbError(privErr.message, 'Could not save your contact details. Please try again.') };
   }
 
   revalidatePath('/marketplace');
@@ -112,10 +114,26 @@ export async function updateListing(id: number, _: ActionState, fd: FormData): P
     .eq('seller_id', user.id);
   if (upErr) {
     await removeImage(newPath ?? null);
-    return { error: 'Could not save your changes.' };
+    return { error: friendlyDbError(upErr.message, 'Could not save your changes.') };
   }
-  await supabase.from('item_private').update({ contact_phone: value.phone }).eq('item_id', id);
+  // The listing row is already saved at this point, so a phone-number failure must be reported
+  // (it used to be ignored, which made phone edits fail silently).
+  const { data: phoneRows, error: phoneErr } = await supabase
+    .from('item_private')
+    .update({ contact_phone: value.phone })
+    .eq('item_id', id)
+    .select('item_id');
   if (imageUrl) await removeImage(storagePathFromUrl(current.image_url, user.id));
+  if (phoneErr || !phoneRows?.length) {
+    revalidatePath('/marketplace');
+    revalidatePath(`/marketplace/${id}`);
+    return {
+      error: friendlyDbError(
+        phoneErr?.message,
+        'Your listing was updated, but your phone number could not be saved. Please open Edit and try again.',
+      ),
+    };
+  }
 
   revalidatePath('/marketplace');
   redirect(`/marketplace/${id}`);
@@ -125,10 +143,13 @@ export async function updateListing(id: number, _: ActionState, fd: FormData): P
 export async function setListingStatus(id: number, status: ListingStatus): Promise<ActionState> {
   const user = await getCurrentUser();
   if (!user) return { error: 'You need to sign in to continue.' };
+  // 'inactive' exists in the database (migration 006) but the app has no screen for it yet;
+  // reject anything the UI never sends instead of trusting the client-supplied value.
+  if (status !== 'active' && status !== 'sold' && status !== 'rented') return { error: 'That status is not allowed for this listing.' };
   const supabase = await createClient();
   const { data, error } = await supabase.from('items').update({ status }).eq('id', id).select('id');
-  if (error) return { error: 'That status is not allowed for this listing.' };
-  if (!data?.length) return { error: 'Only the seller can change this listing.' };
+  if (error) return { error: friendlyDbError(error.message, 'That status is not allowed for this listing.') };
+  if (!data?.length) return { error: "You can't change this listing. Only the seller can, and the account must be in good standing." };
   revalidatePath('/marketplace');
   revalidatePath(`/marketplace/${id}`);
   return { success: 'Listing updated.' };
@@ -144,7 +165,7 @@ export async function deleteListing(id: number): Promise<ActionState> {
   // The database refuses to delete a listing that has conversations (restrict_violation 23001).
   if (error?.code === '23001' || /conversations/i.test(error?.message ?? ''))
     return { error: "This listing has conversations, so it can't be deleted. Mark it as sold or rented instead — your chats stay intact." };
-  if (error || !data?.length) return { error: 'Could not delete this listing.' };
+  if (error || !data?.length) return { error: friendlyDbError(error?.message, 'Could not delete this listing.') };
   await removeImage(storagePathFromUrl(row.image_url, user.id));
   revalidatePath('/marketplace');
   redirect('/marketplace');
@@ -157,7 +178,7 @@ export async function toggleWishlist(itemId: number, saved: boolean): Promise<Ac
   const { error } = saved
     ? await supabase.from('wishlists').upsert({ user_id: user.id, item_id: itemId }, { onConflict: 'user_id,item_id', ignoreDuplicates: true })
     : await supabase.from('wishlists').delete().eq('item_id', itemId).eq('user_id', user.id);
-  if (error) return { error: 'Could not update your wishlist.' };
+  if (error) return { error: friendlyDbError(error.message, 'Could not update your wishlist.') };
   revalidatePath('/wishlist');
   return {};
 }

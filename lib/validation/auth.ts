@@ -19,8 +19,31 @@ export function validateRegistration(input: { name: string; email: string; passw
   return null;
 }
 
-/** Only allow same-site relative redirects (prevents open-redirect via ?next=). */
+/**
+ * Only allow same-site relative redirects (prevents open-redirect via ?next=).
+ * Rejects control characters and whitespace as well: browsers silently strip tabs and newlines
+ * from URLs, so "/\t/evil.com" could otherwise be read as "//evil.com".
+ */
 export function safeNext(next: unknown, fallback = '/marketplace'): string {
-  if (typeof next !== 'string' || !next.startsWith('/') || next.startsWith('//') || next.includes('\\')) return fallback;
+  if (typeof next !== 'string' || next.length > 2000) return fallback;
+  if (!next.startsWith('/') || next.startsWith('//')) return fallback;
+  if (/[\\\u0000-\u001f\u007f\s]/.test(next)) return fallback;
+  try {
+    // Must still resolve to the same origin once a URL parser has had its say.
+    if (new URL(next, 'http://campus.invalid').origin !== 'http://campus.invalid') return fallback;
+  } catch {
+    return fallback;
+  }
   return next;
+}
+
+/**
+ * Email link types the callback accepts for the token-hash flow (works even when the link is opened
+ * in a different browser or device than the one that requested it, unlike the PKCE `code` flow).
+ */
+export const OTP_TYPES = ['signup', 'email', 'recovery', 'email_change'] as const;
+export type OtpType = (typeof OTP_TYPES)[number];
+
+export function parseOtpType(value: unknown): OtpType | null {
+  return typeof value === 'string' && (OTP_TYPES as readonly string[]).includes(value) ? (value as OtpType) : null;
 }

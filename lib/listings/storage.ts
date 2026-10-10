@@ -2,6 +2,7 @@ import 'server-only';
 import { IMAGE_BUCKET } from '@/lib/constants';
 import { createClient } from '@/lib/supabase/server';
 import { sniffImageType, validateImageMeta } from '@/lib/validation/listing';
+import { knownDbError } from '@/lib/errors';
 
 const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' } as const;
 
@@ -23,7 +24,15 @@ export async function uploadListingImage(
     upsert: false,
     cacheControl: '31536000',
   });
-  if (error) return { error: 'Photo upload failed. Please try again.' };
+  if (error) {
+    // Storage policy (migration 009) can refuse for rate limits or restricted accounts. Whether Storage
+    // forwards our coded message or only a generic RLS error needs a live test, so both are handled.
+    const known = knownDbError(error.message);
+    if (known) return { error: known };
+    if (/row-level security|violates|unauthorized|403/i.test(error.message))
+      return { error: 'Photo upload was blocked. You may have reached the upload limit, or your account may be restricted. Try again later.' };
+    return { error: 'Photo upload failed. Please try again.' };
+  }
   const { data } = supabase.storage.from(IMAGE_BUCKET).getPublicUrl(path);
   return { url: data.publicUrl, path };
 }

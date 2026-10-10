@@ -21,7 +21,7 @@ app/            routes (marketplace, sell, wishlist, messages, profile, auth cal
 components/     UI (marketplace/, product/, forms/, messages/)
 lib/            supabase/ auth/ listings/ messages/ validation/  + moderation/ risk/ ai/ (future seams)
 types/          database.ts (schema types) + domain types
-supabase/       schema.v1.sql (original) + migrations/ 001 audit · 002 security · 003 schema/functional
+supabase/       schema.v1.sql (original) + migrations/ 001 audit · 002 security · 003 schema/functional · 004 V3 preflight audit · 005 audit + rate-limit core · 006 accounts + moderation · 007 reporting · 008 categories · 009 rate limits + storage hardening
 tests/          validation tests (npm test)     docs/  security test plan
 ```
 Every database table keeps its V1 name: `profiles, items, item_private, wishlists, conversations, messages`. Seller contact lives in `item_private` and is only returned by the `get_contact()` RPC to signed-in users.
@@ -34,12 +34,12 @@ Every database table keeps its V1 name: `profiles, items, item_private, wishlist
 - Listing rules enforced in the DB: sold/rented status vs listing type, title/description/condition/phone/price checks, image URL must be in the owner's own storage folder.
 - Storage: own-folder uploads only, 5 MB, JPG/PNG/WebP only; the server also checks file signatures; no overwrite.
 - Roles `student | moderator | admin` exist on `profiles.role`; users have **no write privilege on `profiles`**, so nobody can promote themselves. Promote in the SQL Editor: `update public.profiles set role='moderator' where email='…';`
-- College email: format check in the app **and** a DB trigger on `auth.users` (sign-up **and** email change). It proves format, not membership — add real domains to `public.allowed_email_domains` when ready; while that table is empty any `.edu` / `.ac.xx` address is accepted.
+- College email: format check in the app **and** a DB trigger on `auth.users` (sign-up **and** email change). It proves format, not membership — add real domains to `public.allowed_email_domains`; while that table is empty any `.edu` / `.ac.xx` address is accepted. Store each domain **without a leading dot** and in lower case, e.g. `insert into public.allowed_email_domains (domain, note) values ('dauniv.ac.in', 'campus email domain');` — the trigger matches the domain itself and its sub-domains (`dauniv.ac.in`, `x.dauniv.ac.in`). A value with a leading dot (`.dauniv.ac.in`) matches nothing and would lock every student out. Note this only checks the *text* of the address; ownership is proven by email confirmation (Supabase → Authentication → Email), so keep that switched on for production.
 
 ## Local setup
 1. `npm install`
 2. Copy `.env.example` → `.env.local` and fill in your Supabase URL + anon key.
-3. **Run the migrations yourself** in Supabase → SQL Editor, in order: `001_initial_review.sql` (read-only audit — read the output!), `002_security_fixes.sql`, `003_functional_schema_changes.sql`. They are additive and re-runnable; nothing is dropped or rewritten.
+3. **Run the migrations yourself** in Supabase → SQL Editor, in order: `001_initial_review.sql` (read-only audit — read the output!), `002_security_fixes.sql`, `003_functional_schema_changes.sql`. They are additive and re-runnable; nothing is dropped or rewritten. V3 migrations `004`–`009` follow `docs/V3_MIGRATION_RUNBOOK.md`; afterwards run `supabase/verification/v3_post_migration_verification.sql` (must report 0 FAIL).
 4. Supabase → Authentication → URL Configuration: add `http://localhost:3000/auth/callback` and your Vercel URL `/auth/callback` to **Redirect URLs**.
 5. Demo listings: bare image filenames in `items.image_url` resolve to `public/uploads/`.
 6. `npm run dev` → http://localhost:3000
@@ -53,7 +53,7 @@ Every database table keeps its V1 name: `profiles, items, item_private, wishlist
 | `SUPABASE_SERVICE_ROLE_KEY` | not used; never prefix with `NEXT_PUBLIC_` |
 
 ### Commands
-`npm run dev` · `npm run build` · `npm start` · `npm run typecheck` · `npm test`
+`npm run dev` · `npm run build` · `npm start` · `npm run typecheck` · `npm test` (unit tests) · `npm run test:db` (local Postgres tests of the SQL, needs Python — see `supabase/tests/local/README.md`). `npm run lint` is declared but ESLint is not installed in this project yet. Production Supabase setup (SMTP, email templates, redirect URLs, confirmation): `docs/PHASE3_SUPABASE_RUNBOOK.md`.
 
 ## Deployment (Vercel)
 Import the repo, set the env vars above (Production + Preview), deploy. `next.config.ts` allows images from your Supabase Storage host automatically. Uploads are capped at 4 MB (Vercel's request limit); the browser resizes photos first.

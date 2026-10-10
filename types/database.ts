@@ -1,19 +1,37 @@
 /**
- * Hand-written types mirroring the Supabase schema (supabase/schema.sql + migrations).
+ * Hand-written types mirroring the Supabase schema (supabase/schema.v1.sql + migrations 002-009).
+ * Phase 2 added the V3 columns that exist in the database (items.moderation_*, profiles.account_status
+ * and friends) and the `inactive` listing status. Tables/RPCs that no screen uses yet (reports,
+ * categories, audit_logs, staff_* and admin_* functions) are intentionally not typed until they are needed.
  * Regenerate with `npx supabase gen types typescript --project-id <ref>` if you prefer.
  */
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
 type Category = 'books' | 'notes' | 'electronics' | 'stationary';
 type ListingType = 'sell' | 'rent';
-type ListingStatus = 'active' | 'sold' | 'rented';
+type ListingStatus = 'active' | 'sold' | 'rented' | 'inactive';
+type ModerationStatus = 'approved' | 'pending' | 'hidden' | 'rejected';
+type AccountStatus = 'active' | 'suspended' | 'banned';
 type Role = 'student' | 'moderator' | 'admin';
 
 export type Database = {
   public: {
     Tables: {
       profiles: {
-        Row: { id: string; display_name: string; email: string; role: Role };
+        Row: {
+          id: string;
+          display_name: string;
+          email: string;
+          role: Role;
+          account_status: AccountStatus;
+          suspended_until: string | null;
+          suspension_reason: string | null;
+          warning_count: number;
+          last_warning_at: string | null;
+          last_warning_reason: string | null;
+          status_changed_at: string | null;
+          status_changed_by: string | null;
+        };
         Insert: { id: string; display_name: string; email: string; role?: Role };
         Update: { display_name?: string; email?: string; role?: Role };
         Relationships: [];
@@ -33,6 +51,10 @@ export type Database = {
           campus_location: string;
           status: ListingStatus;
           created_at: string;
+          moderation_status: ModerationStatus;
+          moderation_reason: string | null;
+          moderated_at: string | null;
+          moderated_by: string | null;
         };
         Insert: {
           seller_id?: string | null;
@@ -91,6 +113,10 @@ export type Database = {
     };
     Views: { [_ in never]: never };
     Functions: {
+      is_display_name_reserved: {
+        Args: { p_name: string };
+        Returns: boolean;
+      };
       get_contact: {
         Args: { p_item_id: number };
         Returns: { name: string; email: string; phone: string }[];

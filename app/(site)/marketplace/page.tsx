@@ -33,6 +33,15 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
     <div className="browse-grid">
       <Suspense fallback={<aside className="browse-sidebar" />}><Filters /></Suspense>
       <section className="browse-main">
+        {/* The navbar search box is hidden below 768px, so phones get their own. Filters are carried over. */}
+        <form className="mobile-search" action="/marketplace" role="search">
+          {keep.category && <input type="hidden" name="category" value={keep.category} />}
+          {keep.minPrice && <input type="hidden" name="minPrice" value={keep.minPrice} />}
+          {keep.maxPrice && <input type="hidden" name="maxPrice" value={keep.maxPrice} />}
+          {keep.sort && <input type="hidden" name="sort" value={keep.sort} />}
+          <input type="search" name="q" className="search-input" defaultValue={keep.q ?? ''} placeholder="Search books, notes, electronics..." aria-label="Search listings" maxLength={100} />
+          <button type="submit" className="btn btn-dark btn-sm">SEARCH</button>
+        </form>
         <header className="listings-header">
           <div className="listings-header-left">
             <h1 className="font-display">{query.q ? `RESULTS FOR “${query.q.toUpperCase()}”` : 'LATEST LISTINGS'}</h1>

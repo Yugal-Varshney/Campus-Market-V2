@@ -1,7 +1,7 @@
 # Security test plan (run against YOUR Supabase project)
 
 I could not reach your live Supabase project, so RLS / storage / trigger behaviour is **unverified until you run these**.
-Run `001`→`002`→`003` first. Use **SQL Editor** for sections A–C (it simulates a signed-in user), then the manual steps in D.
+Run `001`→`002`→…→`009` first (V3: see `docs/V3_MIGRATION_RUNBOOK.md`). Use **SQL Editor** for sections A–C (it simulates a signed-in user), then the manual steps in D.
 
 ## A. Impersonating users in the SQL Editor
 Create two test accounts through the app (A and B), copy their ids from `select id, email from public.profiles;`, then:
@@ -40,7 +40,54 @@ rollback;   -- always roll back so test data is not kept
 ## C. get_contact()
 - As **anon** (`set local role anon;`): `select * from public.get_contact(1);` → `permission denied`.
 - As A on a sold/rented item → `This item is no longer available.`
-- As A calling it 41 times in an hour → `Too many contact lookups.`
+- As A calling it 41 times in an hour → `RATE_LIMIT: too many "contact_lookup" actions (limit 40 per 60 minutes)…` (migration 005/009; the app shows a friendlier version of this text)
+
+## E. V3 behaviour (migrations 005–009) — every block ends in `rollback`
+Use a throwaway test account A and a listing id `<B_ITEM>` owned by someone else (B).
+
+```sql
+-- E1 rate limit: the 41st contact lookup in an hour must fail
+begin;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"<USER_A_ID>","role":"authenticated"}', true);
+do $$ begin for i in 1..41 loop perform public.get_contact(<B_ITEM>); end loop; end $$;   -- expect: RATE_LIMIT: too many "contact_lookup" actions (limit 40 per 60 minutes)
+rollback;
+
+-- E2 suspended account cannot use the contact function (runs the update as postgres, then switches role)
+begin;
+update public.profiles set account_status = 'suspended', suspended_until = now() + interval '1 day' where id = '<USER_A_ID>';
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"<USER_A_ID>","role":"authenticated"}', true);
+select * from public.get_contact(<B_ITEM>);   -- expect: ACCOUNT_SUSPENDED: your account is suspended until ...
+rollback;
+
+-- E3 hidden listing: invisible to others, locked for its owner
+begin;
+update public.items set moderation_status = 'hidden' where id = <B_ITEM>;
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"<USER_A_ID>","role":"authenticated"}', true);
+select count(*) from public.items where id = <B_ITEM>;          -- expect 0
+select * from public.get_contact(<B_ITEM>);                     -- expect: Listing not found.
+rollback;
+
+-- E4 audit tables are append-only
+begin;
+update public.audit_logs set action = action;                   -- expect: Table audit_logs is append-only: UPDATE is not allowed.
+rollback;
+
+-- E5 reserved display names
+select public.is_display_name_reserved('Admin');                -- expect true
+select public.is_display_name_reserved('Priya Sharma');         -- expect false
+```
+
+| Test (as student A) | Expected |
+|---|---|
+| `select public.staff_hide_listing(<B_ITEM>, 'test');` | any error; must not succeed |
+| `select public.admin_set_role('<USER_A_ID>', 'admin', 'test');` | any error; must not succeed |
+| `insert into public.reports (reporter_id, listing_id, reason) values ('<A>', <B_ITEM>, 'scam');` | succeeds once; the same insert again fails (one open report per reporter and target) |
+| `update public.reports set status = 'resolved';` | `permission denied` |
+| `select * from public.reports;` | only A's own reports |
+| report a listing A owns | `You cannot report yourself or your own listing.` |
 
 ## D. Manual (app + Storage)
 1. Sign-up with a non-college address (`@gmail.com`) → rejected by the app **and** by the DB trigger (try the Supabase Auth API directly with curl to confirm).
