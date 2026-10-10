@@ -26,18 +26,37 @@ select id, email, role from public.profiles where role <> 'student';
 ```
 This is recorded automatically in `audit_logs` as `ROLE_CHANGED`, `source = direct_sql`. Afterwards all role changes go through `admin_set_role` (admins only; never your own role; the last active admin cannot be demoted, suspended, banned or deleted). Never share the SQL Editor or database password; anyone with them can bypass the application rules.
 
-## 4. Verify (read-only queries)
+## 4. Verify (read-only) — two SQL files, then a short app checklist
+Both files are a single `SELECT` (they cannot change anything) and return one table: `mig | area | check_name | expected | actual | status` with status PASS / FAIL / REVIEW / INFO. The first rows are a summary.
+
+**Step 1 — `supabase/verification/v3_post_migration_verification.sql` (structure, security, privileges).**
+Uses only catalog tables and V2 tables, so it never errors even if a migration is missing; it reports FAIL instead. Covers: tables + RLS on; new columns and defaults; constraints and the category FK (old CHECKs gone); every expected policy present **and no unexpected policy** (stray permissive policies, anything applying to anon/PUBLIC); storage policies hardened, bucket unchanged, no leftover probe policy; Realtime still only conversations + messages; table privileges for anon/authenticated/service_role; all 55 V3 functions (SECURITY DEFINER flag, empty search_path, EXECUTE only where intended); all triggers present and enabled; V2 row counts not lower than the 004 audit and no orphans; ownership. The summary has one row per migration (005-009), so a partially applied migration shows up immediately.
+Before running, edit the `expected_min_counts` line at the top if your row counts changed since 004 (defaults: items 7, conversations 2, messages 11, wishlists 1, profiles 3; the check is "not lower than").
+**Expected result:** `OVERALL ... 0 FAIL`. `INFO` rows are normal (status counts, "0 admins" until you create one). A `REVIEW` row means something unexpected exists (e.g. an extra trigger) — read it.
+
+**Step 2 — only if Step 1 shows 0 FAIL: `supabase/verification/v3_post_migration_data_checks.sql`.**
+Reads V3 data: the rate-limit rules are exactly the agreed set (listing 5/h + 20/day, report 3/h + 10/day, chat 20/day, message 60/10 min, photo 30/h, contact 40/h, moderator 200/h); the four seeded categories; no listing with an unknown category; all listings approved and all profiles active; and the pure helper functions behave (reserved names, suspension-expiry logic). Expected: `0 FAIL`.
+
+Paste both outputs back before moving on. Neither file writes anything; the only functions Step 2 calls are pure.
+
+**Optional read-only follow-up queries** (after you have clicked through the app in §5):
 ```sql
-select count(*) from public.items;                               -- same number as before
-select slug, name, is_active from public.categories order by sort_order;   -- books, notes, electronics, stationary
-select count(*) from public.items where moderation_status <> 'approved';   -- 0
-select policyname, cmd, permissive from pg_policies where tablename = 'items' order by 1;
-select action, category, source, created_at from public.audit_logs order by id desc limit 10;
-select * from public.rate_limit_rules order by action, window_seconds;
+-- proves the limit triggers fired on real traffic (one row per action you performed)
+select action, count(*) as events, max(created_at) as last_seen from public.rate_limit_events group by action order by action;
+-- after you create the first admin: proves the audit trail captured it
+select created_at, action, category, source, actor_role, target_id, metadata from public.audit_logs order by id desc limit 5;
 ```
 
-## 5. Manual checks on the live site (not testable locally)
-Sign in as a normal student and: browse, search/filter, create + edit + mark sold a listing, upload a photo, wishlist, contact seller, start a chat and send a message in two browsers (Realtime), delete a listing that has no chat. Then, with a second test account promoted to moderator, call the RPCs from the SQL Editor impersonating nothing — the dashboards arrive in later phases; until then staff features are exercised through tests only.
+## 5. Manual checks on the live site (not testable from SQL or from my local stand-in)
+These are ordinary uses of the V2 app (they create a few normal test rows you can delete afterwards). Do them with a normal student account:
+1. **Browse**: marketplace shows your listings (showcase + real); search, category filter, price slider, sort, pagination all work.
+2. **Listing page**: open one; "Contact seller" reveals contact details (this runs the replaced `get_contact`).
+3. **Wishlist**: add/remove a heart; the wishlist page lists it.
+4. **Create a listing with a photo**; then edit it, mark it sold, mark it available again, and delete it (allowed: it has no chat). Exercises the new insert/limit triggers, the category FK and the **hardened storage upload policy** (a photo upload that fails here is the first thing to report).
+5. **Chat + Realtime**: with a second account in another browser, start a conversation on a listing and send messages both ways; they must appear without refreshing. Open your 2 existing conversations: all 11 earlier messages are still there.
+6. **Storage limits** (enforced by the Storage API, which I cannot test): uploading a >5 MB file or a non-image must still be rejected.
+7. Optional: signing up with the display name `Admin` is rejected (the app will show a generic error until Phase 3 adds a friendly pre-check).
+Staff features (hide/restore, reports, suspension, role changes, categories admin) have no screens until Phase 3/4; they are verified here only structurally (Step 1/2) and by my local tests, **not** by live behaviour. If you want live behavioural proof before the dashboards exist, ask me for a single-statement probe that always rolls back (note: even rolled-back inserts advance identity counters, so it is not strictly read-only).
 **Specifically verify on Supabase** (my local stand-in cannot): 009 completed (its probe passed and the two storage policies were altered) and a photo upload still works; uploading > 5 MB or a non-image is still rejected; Realtime chat still delivers.
 
 ## 6. If something goes wrong
